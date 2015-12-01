@@ -265,8 +265,10 @@ def createGraphNX(threshold=0.5):
 			w = corrMat[symbols[i]][symbols[j]]
 			if abs(w) >= threshold:
 				#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
-				stockGraph.add_edge(symbols[i], symbols[j], weight=w)
+				stockGraph.add_edge(symbols[i], symbols[j], weight=float(w))
+				#stockGraph.add_edge(symbols[i], symbols[j])
 
+	nx.write_graphml(stockGraph, "stock-graph-nx.xml")
 	#print stockGraph.graph
 	return stockGraph
 
@@ -308,13 +310,13 @@ def createGraphGT(threshold=0.5):
 	#	g.vp.symbol[g.vertex(v)] = symbols[v]
 
 	#print g.num_vertices(), g.num_edges()
-	g.save("stock-graph.xml", fmt="graphml")
+	g.save("stock-graph-gt.xml", fmt="graphml")
 
 	return g
 
 # draw graph created using createGraphGT()
 def drawGraph():
-	g = load_graph("stock-graph.xml")
+	g = load_graph("stock-graph-gt.xml")
 	#g = price_network(1500)
 
 	#g = GraphView(gg, vfilt=lambda v: v.out_degree() > 0)
@@ -331,8 +333,8 @@ def drawGraph():
 	eorder = ebet.copy()
 	eorder.a *= -1
 
-	#pos = sfdp_layout(g)
-	pos = fruchterman_reingold_layout(g)
+	pos = sfdp_layout(g)
+	#pos = fruchterman_reingold_layout(g)
 	#print "pos len:", len(pos)
 
 	control = g.new_edge_property("vector<double>")
@@ -344,3 +346,59 @@ def drawGraph():
 		vertex_font_size=deg, vorder=deg, \
 		edge_color=ebet, eorder=eorder, edge_pen_width=ebet, edge_control_points=control, \
 		output="stock-graph.pdf")
+
+
+def drawGraph1():
+	g = load_graph("stock-graph-gt.xml")
+
+	#g = GraphView(gg, vfilt=lambda v: v.out_degree() > 0)
+	print g.num_vertices(), g.num_edges()
+
+	deg = g.degree_property_map("in")
+	deg.a = 4 * (np.sqrt(deg.a) * 0.5 + 0.4)
+	#print "degree len:", len(deg.a)
+
+	ebet = betweenness(g)[1]
+	ebet.a /= ebet.a.max() / 10.
+	#print "ebet len:", len(ebet.a)	
+
+	eorder = ebet.copy()
+	eorder.a *= -1
+
+	pos = sfdp_layout(g)
+	#pos = fruchterman_reingold_layout(g)
+	#print "pos len:", len(pos)
+
+	control = g.new_edge_property("vector<double>")
+	for e in g.edges():
+		d = np.sqrt(sum((	pos[e.source()].a - pos[e.target()].a) ** 2)) / 5
+		control[e] = [0.3, d, 0.7, d]
+		
+	graph_draw(g, pos=pos, vertex_text=g.vp.symbol, vertex_size=deg, vertex_fill_color=deg, \
+		vertex_font_size=deg, vorder=deg, \
+		edge_color=ebet, eorder=eorder, edge_control_points=control, \
+		output="stock-graph.pdf")
+
+
+def findFreqOfCliquesInGraph(g):
+	cliques = nx.find_cliques(g)
+	freq = dict()
+	for clique in cliques:
+	    clique_size = len(clique)
+	    if clique_size in freq:
+	        freq[clique_size] += 1
+	    else:
+	        freq[clique_size] = 1
+
+	return freq
+
+
+def plotHistFromDict(x):
+	import matplotlib.pyplot as plt
+
+	#x = {u'Label1':26, u'Label2': 17, u'Label3':30}
+
+	plt.bar(range(len(x)), x.values(), align='center')
+	plt.xticks(range(len(x)), x.keys())
+
+	plt.show()
