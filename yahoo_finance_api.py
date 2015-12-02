@@ -5,6 +5,7 @@ else:
     from io import StringIO
 
 import requests
+from lxml import html
 import pandas as pd
 import re
 from pyspark import *
@@ -38,9 +39,44 @@ def searchStock(searchTerm):
 	#print(response)
 	return response
 
+# Gets a list of sectors and indutries belonging to each sector
+# {sectorName: [{industryName, industryId}, ...], ....}
+def getSectorData():
+	page = requests.get('http://biz.yahoo.com/ic/ind_index.html')
+	tree = html.fromstring(page.content)
+	data = tree.xpath('//tr/td[@width="50%"]/table//tr')
+
+	sectors = dict()
+	for tr in data:
+	    td = tr.xpath('./td')
+	    if len(td) > 1:
+	        industryName = re.sub(r'(.*)\n(.*)', r'\1 \2', td[1].xpath('.//a/text()')[0])
+	        industryId = extractIndustryId(td[1].xpath('.//a/@href')[0])
+	        sectors[key].append({'Name': industryName, 'Id': industryId})
+	    else:
+	        if td[0].get('height') == None:
+	            sectorName = re.sub(r'(.*)\n(.*)', r'\1 \2', td[0].xpath('.//b/text()')[0])
+            	key = sectorName
+	            sectors[key] = []
+
+	return sectors
+
+# Gets a list of sectors and indutry ids belonging to each sector
+# {sectorName: industryIdList, ...}
+def getIndustryIdsForSectors():
+	sectors = getSectorData()
+	industryIdsPerSector = dict()
+	for name,industryList in sectors.iteritems():
+	    industryIdsPerSector[name] = []
+	    for industry in industryList:
+	        industryIdsPerSector[name].append(industry['Id'])
+
+	return industryIdsPerSector
+
+
 # Get list of sectors and industries belonging to each sector
 # not giving data right now (check)
-def getSectorData():
+def getSectorDataOld():
 	query = "select * from yahoo.finance.sectors"
 	#print(query)
 	return execQuery(query)
