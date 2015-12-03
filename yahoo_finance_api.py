@@ -42,22 +42,29 @@ def searchStock(searchTerm):
 # Gets a list of sectors and indutries belonging to each sector
 # {sectorName: [{industryName, industryId}, ...], ....}
 def getSectorData():
+	
+	def extractIndustryId(url):
+		parts = url.split('/')
+		lastPart = parts[-1]
+		return lastPart.split('.')[0]
+
 	page = requests.get('http://biz.yahoo.com/ic/ind_index.html')
 	tree = html.fromstring(page.content)
 	data = tree.xpath('//tr/td[@width="50%"]/table//tr')
 
 	sectors = dict()
 	for tr in data:
-	    td = tr.xpath('./td')
-	    if len(td) > 1:
-	        industryName = re.sub(r'(.*)\n(.*)', r'\1 \2', td[1].xpath('.//a/text()')[0])
-	        industryId = extractIndustryId(td[1].xpath('.//a/@href')[0])
-	        sectors[key].append({'Name': industryName, 'Id': industryId})
-	    else:
-	        if td[0].get('height') == None:
-	            sectorName = re.sub(r'(.*)\n(.*)', r'\1 \2', td[0].xpath('.//b/text()')[0])
-            	key = sectorName
-	            sectors[key] = []
+		td = tr.xpath('./td')
+		if len(td) > 1:
+			# replace \n in string with space
+			industryName = re.sub(r'(.*)\n(.*)', r'\1 \2', td[1].xpath('.//a/text()')[0])
+			industryId = extractIndustryId(td[1].xpath('.//a/@href')[0])
+			sectors[key].append({'Name': industryName, 'Id': industryId})
+		else:
+			if td[0].get('height') == None:
+				sectorName = re.sub(r'(.*)\n(.*)', r'\1 \2', td[0].xpath('.//b/text()')[0])
+				key = sectorName
+				sectors[key] = []
 
 	return sectors
 
@@ -67,14 +74,76 @@ def getIndustryIdsForSectors():
 	sectors = getSectorData()
 	industryIdsPerSector = dict()
 	for name,industryList in sectors.iteritems():
-	    industryIdsPerSector[name] = []
-	    for industry in industryList:
-	        industryIdsPerSector[name].append(industry['Id'])
+		industryIdsPerSector[name] = []
+		for industry in industryList:
+			industryIdsPerSector[name].append(industry['Id'])
 
 	return industryIdsPerSector
 
 
-# Get list of sectors and industries belonging to each sector
+# Get list of sectors and all industries within those sectors and all companies within those industries
+# returns dataframe with columns: [sector_name, industry_id, industry_name, company_symbol, company_name]
+def getSectorIndustryData():
+	sectors = getSectorData()
+
+	industryIdList = []
+	sectorDF = pd.DataFrame()
+	
+	for name,industryList in sectors.iteritems():
+		temp = pd.DataFrame(industryList)
+		temp.columns = ['industry_id', 'industry_name']
+		temp['sector_name'] = name 
+		sectorDF = sectorDF.append(temp)
+		#industryIdList.extend(temp['industry_id'])
+
+	sectorDF['industry_id'] = sectorDF['industry_id'].astype(int)
+	sectorDF = sectorDF.drop_duplicates()
+	#print len(sectorDF), len(sectorDF.drop_duplicates())
+	#print sectorDF.head()
+	industryIdList = (sectorDF['industry_id'].unique())
+	industryIdList.sort()
+	#print "sectorIndustryIds:", industryIdList
+
+	industryData = getIndustryData(industryIdList)
+	response = json.loads(industryData.content)
+	results = response['query']['results']['industry']
+	industryDF = pd.DataFrame()
+	for industry in results:
+		if 'company' in industry:
+			data = industry['company']
+			if type(data) == list:
+				temp = pd.DataFrame(data)
+			else:
+				temp = pd.DataFrame([data])
+			temp.columns = ['company_name', 'company_symbol']
+			temp['industry_id'] = industry['id']
+			temp['company_name'] = temp['company_name'].map(lambda x: re.sub(r'(.*)\n(.*)', r'\1 \2', x))
+			industryDF = industryDF.append(temp)
+	
+	industryDF['industry_id'] = industryDF['industry_id'].astype(int)
+	industryDF = industryDF.drop_duplicates()
+	#print len(industryDF), len(industryDF.drop_duplicates())
+	#print industryDF.head()
+	#tempList = (industryDF['industry_id'].unique())
+	#tempList.sort()
+	#print "industryIndustryIds:", tempList
+	
+	joinedDF = industryDF.merge(sectorDF, on="industry_id") #, how="inner", lsuffix="_left", rsuffix="_right"
+	joinedDF = joinedDF.drop_duplicates()
+
+	f = open("sector_industry_company.json", "wb")
+	joinedDF.to_json(f, orient='records')
+	f.close()
+
+	return joinedDF
+
+
+def loadSectorIndustryData():
+	df = pd.DataFrame("sector_industry_company.json")
+	return df
+
+
+# Get list of sectors and industrigetIndustryDataes belonging to each sector
 # not giving data right now (check)
 def getSectorDataOld():
 	query = "select * from yahoo.finance.sectors"
@@ -83,7 +152,7 @@ def getSectorDataOld():
 
 # Get list of companies belonging to these industryIds
 def getIndustryData(industryIds):
-	industryIds = ",".join(["'" + id + "'" for id in industryIds])
+	industryIds = ",".join(["'" + str(id) + "'" for id in industryIds])
 	query = "select * from yahoo.finance.industry where id in (" + industryIds + ")"
 	#print(query)
 	return execQuery(query)
