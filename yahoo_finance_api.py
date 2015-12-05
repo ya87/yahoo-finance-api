@@ -414,45 +414,19 @@ def calculateCorrelationMatrix(sector=None):
 	corrMat.to_json(outFilename)
 	return corrMat
 
-# using networkx lib
-def createGraphNXOld(threshold=0.5, sector=None):
+
+'''
+threshold = values between 0.0 and 1.0
+sector = one of ["Technology", ....]
+lib = "nx" or "gt" 
+'''
+def createGraph(threshold=0.5, sector=None, lib="nx"):
 	if sector != None:
 		filename = "corr_matrix_"+sector+".json"
-		outFilename = "stock_graph_nx_"+sector+".xml"
+		outFilename = "stock_graph_"+lib+"_"+sector+".xml"
 	else:
 		filename = "corr_matrix.json"
-		outFilename = "stock_graph_nx.xml"
-
-	corrMat = pd.read_json(filename)
-	#print corrMat.head()
-	symbols = corrMat.columns
-	numStocks = len(symbols)
-	
-	stockGraph = nx.Graph()	
-	for i in range(numStocks):
-		for j in range(i+1, numStocks):
-			w = corrMat[symbols[i]][symbols[j]]
-			if abs(w) >= threshold:
-				#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
-				stockGraph.add_edge(symbols[i], symbols[j], weight=float(w))
-				#stockGraph.add_edge(symbols[i], symbols[j])
-
-	# put all nodes in same cluster
-	nx.set_node_attributes(stockGraph, 'cluster', 0)
-
-	nx.write_graphml(stockGraph, outFilename)
-	#print stockGraph.graph
-	return stockGraph
-
-
-# using networkx lib
-def createGraphNX(threshold=0.5, sector=None):
-	if sector != None:
-		filename = "corr_matrix_"+sector+".json"
-		outFilename = "stock_graph_nx_"+sector+".xml"
-	else:
-		filename = "corr_matrix.json"
-		outFilename = "stock_graph_nx.xml"
+		outFilename = "stock_graph_"+lib+".xml"
 
 	sectors = pd.read_json("nasdaq_sector_industry_company.json")
 	industry = sectors[sectors['sector_name'] == sector]
@@ -462,197 +436,137 @@ def createGraphNX(threshold=0.5, sector=None):
 	#print corrMat.head()
 	symbols = corrMat.columns
 	numStocks = len(symbols)
-	
-	stockGraph = nx.Graph()
-	for i,sym in enumerate(symbols):
-		cluster = 0 #randint(1, 5)
-		companyName = company.get(sym)
-		stockGraph.add_node(i, symbol=sym, name = companyName, cluster=cluster)	
 
-	for i in range(numStocks):
-		for j in range(i+1, numStocks):
-			w = corrMat[symbols[i]][symbols[j]]
-			if abs(w) >= threshold:
-				#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
-				stockGraph.add_edge(i, j, weight=float(w))
-				#stockGraph.add_edge(symbols[i], symbols[j])
+	if lib == "nx":	
+		g = nx.Graph()
+		for i,sym in enumerate(symbols):
+			cluster = 0 #randint(1, 5)
+			companyName = company.get(sym)
+			g.add_node(i, symbol=sym, name = companyName, cluster=cluster)	
 
-	nx.write_graphml(stockGraph, outFilename)
-	#print stockGraph.graph
-	return stockGraph
+		for i in range(numStocks):
+			for j in range(i+1, numStocks):
+				w = corrMat[symbols[i]][symbols[j]]
+				if abs(w) >= threshold:
+					#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
+					g.add_edge(i, j, weight=float(w))
+
+		nx.write_graphml(g, outFilename)
+		#print g.graph
+		return g
+
+	elif lib == "gt":
+		g = Graph(directed=False)
+		#print g.num_vertices(), g.num_edges()
+		g.add_vertex(numStocks)
+
+		v_symbol = g.new_vertex_property("string")
+		g.vp.symbol = v_symbol
+		v_name = g.new_vertex_property("string")
+		g.vp.name = v_name
+		v_cluster = g.new_vertex_property("int")
+		g.vp.cluster = v_cluster
+		for i in range(numStocks):
+			v = g.vertex(i)
+			g.vp.symbol[v] = symbols[i]
+			g.vp.name[v] = company.get(symbols[i])
+			g.vp.cluster[v] = 0
+
+		e_weight = g.new_edge_property("double")
+		g.ep.weight = e_weight
+
+		for i in range(numStocks-1):
+			for j in range(i+1, numStocks):
+				w = corrMat[symbols[i]][symbols[j]]
+				if abs(w) >= threshold:
+					#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
+					g.add_edge(i, j)
+					g.ep.weight[g.edge(i, j)] = w
+
+		g.save(outFilename, fmt="graphml")
+
+		return g
 
 
-# using graph-tool lib
-def createGraphGT(threshold=0.5, sector=None):
-	if sector != None:
-		filename = "corr_matrix_"+sector+".json"
-		outFilename = "stock_graph_gt_"+sector+".xml"
-	else:
-		filename = "corr_matrix.json"
-		outFilename = "stock_graph_gt.xml"
+'''
+graph created with nx lib can be drawn using both nx and gt lib
+grapg created with gt lib cab be created using gt lib but getting error with nx lib
+'''
+def drawGraph(inGraphFilename, lib="gt"):
+	outFilename = inGraphFilename.split(".")[0] + "_" + lib + "_.pdf"
+	print outFilename
 
-	corrMat = pd.read_json(filename)
-	#print corrMat.head()
-	symbols = corrMat.columns
-	numStocks = len(symbols)
-	
-	g = Graph(directed=False)
-	#print g.num_vertices(), g.num_edges()
-	g.add_vertex(numStocks)
+	if lib == "nx":
+		'''if graph_layout == 'shell':
+	    	graph_pos=nx.spring_layout(G)
+	    elif graph_layout == 'spectral':
+	        graph_pos=nx.spectral_layout(G)
+	    elif graph_layout == 'random':
+	        graph_pos=nx.random_layout(G)
+	    else:
+	        graph_pos=nx.spring_layout(G)'''
 
-	v_symbol = g.new_vertex_property("string")
-	g.vp.symbol = v_symbol
-	for i in range(numStocks):
-		g.vp.symbol[g.vertex(i)] = symbols[i]
+		g = nx.read_graphml(inGraphFilename)
 
-	e_weight = g.new_edge_property("double")
-	g.ep.weight = e_weight
-	#vertex_set = set()
+		graph_pos=nx.spring_layout(g)
 
-	#print g.num_vertices(), g.num_edges()
-	for i in range(numStocks-1):
-		for j in range(i+1, numStocks):
-			w = corrMat[symbols[i]][symbols[j]]
-			if abs(w) >= threshold:
-				#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
-				#vertex_set.add(i)
-				#vertex_set.add(j)
-				g.add_edge(i, j)
-				g.ep.weight[g.edge(i, j)] = w
-
-	#print g.num_vertices(), g.num_edges()
-
-	#print "number of nodes:", len(vertex_set)
-	#for v in vertex_set:
-	#	g.vp.symbol[g.vertex(v)] = symbols[v]
-
-	#print g.num_vertices(), g.num_edges()
-	g.save(outFilename, fmt="graphml")
-
-	return g
-
-# draw graph created using createGraphGT()
-def drawGraphGT(sector=None):
-	if sector != None:
-		filename = "stock_graph_gt_"+sector+".xml"
-		outFilename = "stock_graph_gt"+sector+".pdf"
-	else:
-		filename = "stock_graph_gt.xml"
-		outFilename = "stock_graph_gt.pdf"
-
-	g = load_graph(filename)
-	#g = price_network(1500)
-
-	#g = GraphView(gg, vfilt=lambda v: v.out_degree() > 0)
-	print g.num_vertices(), g.num_edges()
-
-	deg = g.degree_property_map("in")
-	deg.a = 4 * (np.sqrt(deg.a) * 0.5 + 0.4)
-	#print "degree len:", len(deg.a)
-
-	ebet = betweenness(g)[1]
-	ebet.a /= ebet.a.max() / 10.
-	#print "ebet len:", len(ebet.a)	
-
-	eorder = ebet.copy()
-	eorder.a *= -1
-
-	pos = sfdp_layout(g)
-	#pos = fruchterman_reingold_layout(g)
-	#print "pos len:", len(pos)
-
-	control = g.new_edge_property("vector<double>")
-	for e in g.edges():
-		d = np.sqrt(sum((	pos[e.source()].a - pos[e.target()].a) ** 2)) / 5
-		control[e] = [0.3, d, 0.7, d]
+		deg = g.degree().values()
+		node_size = [d*100 for d in deg] #nx.eigenvector_centrality_numpy(G, weight="weight").values()
+		node_alpha = 0.3
+		node_color = nx.get_node_attributes(g, 'cluster').values()
+		edge_thickness = 1
+		edge_alpha = 0.3
+		edge_color = 'blue'
+		node_text_size = node_size
+		text_font = 'sans-serif'
+		edge_text_pos=0.3
 		
-	graph_draw(g, pos=pos, vertex_text=g.vp.symbol, vertex_size=deg, vertex_fill_color=deg, \
-		vertex_font_size=deg, vorder=deg, \
-		edge_color=ebet, eorder=eorder, edge_pen_width=ebet, edge_control_points=control, \
-		output=outFilename)
+		#if labels is None:
+		#	labels = range(len(graph))
 
+	    #edge_labels = dict(zip(graph, labels))
 
-def drawGraphGT1(sector=None):
-	if sector != None:
-		filename = "stock_graph_nx_"+sector+".xml"
-		outFilename = "stock_graph_nx_"+sector+".pdf"
-	else:
-		filename = "stock_graph_nx.xml"
-		outFilename = "stock_graph_nx.pdf"
+		# draw graph
+		nx.draw_networkx_nodes(g, graph_pos, node_size=node_size, alpha=node_alpha, node_color=node_color)
+		nx.draw_networkx_edges(g, graph_pos, width=edge_thickness, alpha=edge_alpha, edge_color=edge_color)
+		#nx.draw_networkx_labels(g, graph_pos,font_size=node_text_size, font_family=text_font)
+		#nx.draw_networkx_edge_labels(g, graph_pos, edge_labels=edge_labels, label_pos=edge_text_pos)
 
-	g = load_graph(filename)
-	#g.save("temp_gt.xml", fmt="graphml")
+		plt.savefig(outFilename)
+		# show graph
+		plt.show()
 
-	#g = GraphView(gg, vfilt=lambda v: v.out_degree() > 0)
-	print g.num_vertices(), g.num_edges()
+	elif lib == "gt":
+		g = load_graph(inGraphFilename)
 
-	deg = g.degree_property_map("in")
-	deg.a = 10 * (np.sqrt(deg.a) * 0.5 + 0.4)
-	#print "degree len:", len(deg.a)
+		#g = GraphView(gg, vfilt=lambda v: v.out_degree() > 0)
+		print g.num_vertices(), g.num_edges()
 
-	ebet = betweenness(g)[1]
-	ebet.a /= ebet.a.max() / 10.
-	#print "ebet len:", len(ebet.a)	
+		deg = g.degree_property_map("in")
+		deg.a = 10 * (np.sqrt(deg.a) * 0.5 + 0.4)
+		#print "degree len:", len(deg.a)
 
-	eorder = ebet.copy()
-	eorder.a *= -1
+		ebet = betweenness(g)[1]
+		ebet.a /= ebet.a.max() / 10.
+		#print "ebet len:", len(ebet.a)	
 
-	pos = sfdp_layout(g)
-	#pos = fruchterman_reingold_layout(g)
-	#print "pos len:", len(pos)
+		eorder = ebet.copy()
+		eorder.a *= -1
 
-	control = g.new_edge_property("vector<double>")
-	for e in g.edges():
-		d = np.sqrt(sum((	pos[e.source()].a - pos[e.target()].a) ** 2)) / 5
-		control[e] = [0.3, d, 0.7, d]
-		
-	graph_draw(g, pos=pos, vertex_text=g.vp.symbol, \
-		vertex_size=deg, vertex_fill_color=g.vp.cluster, \
-		vertex_font_size=deg, vorder=deg, \
-		edge_color=ebet, eorder=eorder, edge_control_points=control, \
-		output=outFilename)
+		pos = sfdp_layout(g)
+		#pos = fruchterman_reingold_layout(g)
+		#print "pos len:", len(pos)
 
-
-# TODO - incomplete code
-def drawGraphNX(G, graph_layout='spring'):
-    # these are different layouts for the network you may try
-    # shell seems to work best
-    if graph_layout == 'shell':
-    	graph_pos=nx.spring_layout(G)
-    elif graph_layout == 'spectral':
-        graph_pos=nx.spectral_layout(G)
-    elif graph_layout == 'random':
-        graph_pos=nx.random_layout(G)
-    else:
-        graph_pos=nx.spring_layout(G)
-
-    deg = G.degree().values()
-    node_size = [d*100 for d in deg] #nx.eigenvector_centrality_numpy(G, weight="weight").values()
-    node_alpha = 0.3
-    node_color = nx.get_node_attributes(G, 'cluster').values()
-    edge_thickness = 1
-    edge_alpha = 0.3
-    edge_color = 'blue'
-    node_text_size = node_size
-    text_font = 'sans-serif'
-    edge_text_pos=0.3
-	
-	#if labels is None:
-	#	labels = range(len(graph))
-
-    #edge_labels = dict(zip(graph, labels))
-
-    # draw graph
-    nx.draw_networkx_nodes(G,graph_pos,node_size=node_size, 
-                           alpha=node_alpha, node_color=node_color)
-    nx.draw_networkx_edges(G,graph_pos,width=edge_thickness,
-                           alpha=edge_alpha,edge_color=edge_color)
-    #nx.draw_networkx_labels(G, graph_pos,font_size=node_text_size, font_family=text_font)
-    #nx.draw_networkx_edge_labels(G, graph_pos, edge_labels=edge_labels, label_pos=edge_text_pos)
-
-    #plt.savefig("something.pdf")
-    # show graph
-    plt.show()
+		control = g.new_edge_property("vector<double>")
+		for e in g.edges():
+			d = np.sqrt(sum((	pos[e.source()].a - pos[e.target()].a) ** 2)) / 5
+			control[e] = [0.3, d, 0.7, d]
+			
+		graph_draw(g, pos=pos, vertex_text=g.vp.symbol, \
+			vertex_size=deg, vertex_fill_color=g.vp.cluster, \
+			vertex_font_size=deg, vorder=deg, \
+			edge_color=ebet, eorder=eorder, edge_control_points=control, \
+			output=outFilename)
 
 
 def findFreqOfCliquesInGraph(g):
@@ -680,14 +594,37 @@ def plotHistFromDict(x):
 	plt.show()
 
 
-# temporary function
-def tempCliques():
+# find communites using clique percolation method (networkx)
+def findCommunites(sector="Technology", k=5):
 	#g = createGraphNX(0.8, 'Technology')
-	g = nx.read_graphml("stock_graph_nx_Technology.xml")
+	graphInFilename = "stock_graph_nx_"+sector+".xml"
+	graphOutFilename = "stock_communities_nx_"+sector+".xml"
+	outFilename = "stock_communities_nx_"+sector+".csv"
+
+	g = nx.read_graphml(graphInFilename)
 	#freq = findFreqOfCliquesInGraph(g)
 	#plotHistFromDict(freq)
 	
-	comm = nx.k_clique_communities(g, 5)
+	comm = nx.k_clique_communities(g, k)
 	communities = []
 	for c in comm:
-		print c
+		communities.append(c) 
+
+	colors = range(len(communities))
+
+	i = 0
+	for c in communities:
+		for v in c:
+			g.node[v]['cluster'] = colors[i] + 1
+		i += 1
+
+	nx.write_graphml(g, graphOutFilename)
+		
+	import csv
+	with open(outFilename, "wb") as f:
+		writer = csv.writer(f, delimiter='|', quotechar="'", quoting=csv.QUOTE_MINIMAL)
+		writer.writerow(["symbol", "name", "cluster"])
+		for v in g:
+			writer.writerow([g.node[v]['symbol'], g.node[v]['name'], g.node[v]['cluster']])
+
+	drawGraphNX(g)
