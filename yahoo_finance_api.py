@@ -316,13 +316,13 @@ def loadData(fileLoc):
 
 
 def gatherStats(fileLoc, sector=None):
+	df = pd.read_json("sector_industry_company_subset.json")
 	if sector != None:
-		df = pd.read_json("nasdaq_sector_industry_company.json")
 		symbols = list(df[df['sector_name'] == sector]['company_symbol'])
-		fileList = [(symbol + ".json") for symbol in symbols]
 	else:
-		fileList = listdir(fileLoc)
+		symbols = list(df['company_symbol'])
 
+	fileList = [(symbol + ".json") for symbol in symbols]
 	print "fileListLen:", len(fileList)
 
 	stats = pd.DataFrame()
@@ -353,6 +353,7 @@ def gatherStats(fileLoc, sector=None):
 # select those stocks for which number of records is equal 
 # to the number of records which most stocks have.
 # there are 1502 stocks with 2745 stocks
+# TODO - running too slow
 def findStockSubsetToAnalyse(fileLoc, sector=None):
 	stats = gatherStats(fileLoc, sector)
 	#grp = stats.groupby('Count').count()
@@ -367,6 +368,7 @@ def findStockSubsetToAnalyse(fileLoc, sector=None):
 	else:
 		filename = "stock_subset.csv"
 
+	print "writing stock symbols to file: ", filename
 	stats['Symbol'].to_csv(filename, index=False)
 
 	return stats['Symbol']
@@ -380,8 +382,8 @@ def loadStockSubsetToAnalyse(fileLoc, sector=None):
 		filename = "stock_subset.csv"
 		outFilename = "closing_price_subset.json"
 
-	print "input file name:", filename
-	print "output file name:", outFilename
+	print "reading stock symbols from file:", filename
+	print "writing closing price data to file:", outFilename
 
 	symbols = pd.read_csv(filename, names=['Symbol'])['Symbol']
 	quotes = pd.DataFrame()
@@ -408,9 +410,12 @@ def calculateCorrelationMatrix(sector=None):
 		filename = "closing_price_subset.json"
 		outFilename = "corr_matrix.json"
 
+	print "reading closing price data from file: ", filename
+
 	quotes = pd.read_json(filename)
 	corrMat = quotes.corr(method='pearson')
 
+	print "writing correlation matrix to file: ", outFilename
 	corrMat.to_json(outFilename)
 	return corrMat
 
@@ -421,15 +426,21 @@ sector = one of ["Technology", ....]
 lib = "nx" or "gt" 
 '''
 def createGraph(threshold=0.5, sector=None, lib="nx"):
+	sectors = pd.read_json("nasdaq_sector_industry_company.json")
+
+	th = re.sub(r'([0-9]*)\.([0-9]*)',r'\1\2',str(threshold))
 	if sector != None:
 		filename = "corr_matrix_"+sector+".json"
-		outFilename = "stock_graph_"+lib+"_"+sector+".xml"
+		outFilename = "stock_graph_"+lib+"_"+sector+"_th"+th+".xml"
+		industry = sectors[sectors['sector_name'] == sector]
 	else:
 		filename = "corr_matrix.json"
-		outFilename = "stock_graph_"+lib+".xml"
+		outFilename = "stock_graph_"+lib+"_th"+th+".xml"
+		industry = sectors
 
-	sectors = pd.read_json("nasdaq_sector_industry_company.json")
-	industry = sectors[sectors['sector_name'] == sector]
+	print "reading correlation matrix from file: ", filename
+	print "writing graph to file: ", outFilename
+
 	company = dict(zip(industry['company_symbol'], industry['company_name']))
 
 	corrMat = pd.read_json(filename)
@@ -442,7 +453,9 @@ def createGraph(threshold=0.5, sector=None, lib="nx"):
 		for i,sym in enumerate(symbols):
 			cluster = 0 #randint(1, 5)
 			companyName = company.get(sym)
-			g.add_node(i, symbol=sym, name = companyName, cluster=cluster)	
+			if companyName == None or len(companyName) == 0:
+				companyName = "Unavailable"
+			g.add_node(i, symbol=sym, name = companyName, cluster=cluster)
 
 		for i in range(numStocks):
 			for j in range(i+1, numStocks):
@@ -451,13 +464,13 @@ def createGraph(threshold=0.5, sector=None, lib="nx"):
 					#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
 					g.add_edge(i, j, weight=float(w))
 
+		print g.number_of_nodes(), g.number_of_edges()
 		nx.write_graphml(g, outFilename)
-		#print g.graph
+		
 		return g
 
 	elif lib == "gt":
 		g = Graph(directed=False)
-		#print g.num_vertices(), g.num_edges()
 		g.add_vertex(numStocks)
 
 		v_symbol = g.new_vertex_property("string")
@@ -483,6 +496,7 @@ def createGraph(threshold=0.5, sector=None, lib="nx"):
 					g.add_edge(i, j)
 					g.ep.weight[g.edge(i, j)] = w
 
+		print g.num_vertices(), g.num_edges()
 		g.save(outFilename, fmt="graphml")
 
 		return g
@@ -493,8 +507,8 @@ graph created with nx lib can be drawn using both nx and gt lib
 grapg created with gt lib cab be created using gt lib but getting error with nx lib
 '''
 def drawGraph(inGraphFilename, lib="gt"):
-	outFilename = inGraphFilename.split(".")[0] + "_" + lib + "_.pdf"
-	print outFilename
+	outFilename = inGraphFilename.split(".")[0] + "_" + lib + ".pdf"
+	print "drawing graph to file: ", outFilename
 
 	if lib == "nx":
 		'''if graph_layout == 'shell':
@@ -553,19 +567,24 @@ def drawGraph(inGraphFilename, lib="gt"):
 		eorder = ebet.copy()
 		eorder.a *= -1
 
+		groups = g.vp.cluster
+		elen = ebet
+
 		pos = sfdp_layout(g)
 		#pos = fruchterman_reingold_layout(g)
 		#print "pos len:", len(pos)
 
 		control = g.new_edge_property("vector<double>")
 		for e in g.edges():
-			d = np.sqrt(sum((	pos[e.source()].a - pos[e.target()].a) ** 2)) / 5
+			d = np.sqrt(sum((pos[e.source()].a - pos[e.target()].a) ** 2)) / 5
 			control[e] = [0.3, d, 0.7, d]
 			
-		graph_draw(g, pos=pos, vertex_text=g.vp.symbol, \
-			vertex_size=deg, vertex_fill_color=g.vp.cluster, \
-			vertex_font_size=deg, vorder=deg, \
-			edge_color=ebet, eorder=eorder, edge_control_points=control, \
+		graph_draw(g, pos=pos, #vertex_text=g.vp.symbol,
+			#vertex_size=deg, 
+			vertex_fill_color=g.vp.cluster,
+			#vertex_font_size=deg, 
+			vorder=deg,
+			edge_color=ebet, eorder=eorder, edge_control_points=control,
 			output=outFilename)
 
 
@@ -595,11 +614,20 @@ def plotHistFromDict(x):
 
 
 # find communites using clique percolation method (networkx)
-def findCommunites(sector="Technology", k=5):
-	#g = createGraphNX(0.8, 'Technology')
-	graphInFilename = "stock_graph_nx_"+sector+".xml"
-	graphOutFilename = "stock_communities_nx_"+sector+".xml"
-	outFilename = "stock_communities_nx_"+sector+".csv"
+def findCommunites(threshold=0.5, sector=None, k=5):
+	th = re.sub(r'([0-9]*)\.([0-9]*)',r'\1\2',str(threshold))
+	if sector != None:
+		graphInFilename = "stock_graph_nx_"+sector+"_th"+th+".xml"
+		graphOutFilename = "stock_communities_nx_"+sector+"_th"+th+"_k"+str(k)+".xml"
+		outFilename = "stock_communities_nx_"+sector+"_th"+th+"_k"+str(k)+".csv"
+	else:
+		graphInFilename = "stock_graph_nx_"+th+".xml"
+		graphOutFilename = "stock_communities_nx"+"_th"+th+"_k"+str(k)+".xml"
+		outFilename = "stock_communities_nx"+"_th"+th+"_k"+str(k)+".csv"
+
+	print "reading graph from file: ", graphInFilename
+	print "writing graph with community info to file: ", outFilename
+	print "writing community details in csv format to file: ", outFilename
 
 	g = nx.read_graphml(graphInFilename)
 	#freq = findFreqOfCliquesInGraph(g)
@@ -609,7 +637,8 @@ def findCommunites(sector="Technology", k=5):
 	communities = []
 	for c in comm:
 		communities.append(c) 
-
+	print "number of communities found: ", len(communities)
+	
 	colors = range(len(communities))
 
 	i = 0
@@ -627,4 +656,114 @@ def findCommunites(sector="Technology", k=5):
 		for v in g:
 			writer.writerow([g.node[v]['symbol'], g.node[v]['name'], g.node[v]['cluster']])
 
-	drawGraphNX(g)
+	drawGraph(graphOutFilename, "gt")
+
+
+def createSubsetMatrix(matDF, columns):
+	subsetDF = pd.DataFrame()
+	for column in columns:
+		subsetDF[column] = matDF[column][columns]
+
+	return subsetDF
+
+
+def createGraphFromSubsetOfNodes(threshold=0.5, sector=None, lib="nx"):
+	sectors = pd.read_json("nasdaq_sector_industry_company.json")
+
+	if sector != None:
+		filename = "corr_matrix_"+sector+".json"
+		outFilename = "stock_graph_"+lib+"_"+sector+".xml"
+		industry = sectors[sectors['sector_name'] == sector]
+	else:
+		filename = "corr_matrix.json"
+		outFilename = "stock_graph_"+lib+".xml"
+		industry = sectors
+
+	company = dict(zip(industry['company_symbol'], industry['company_name']))
+
+	corrMat = pd.read_json(filename)
+	#print corrMat.head()
+	symbols = corrMat.columns
+	numStocks = len(symbols)
+	print "number of stocks:", numStocks
+
+	vertex_set = set()
+	for i in range(numStocks):
+		for j in range(i+1, numStocks):
+			w = corrMat[symbols[i]][symbols[j]]
+			if abs(w) >= threshold:
+				vertex_set.add(symbols[i])
+				vertex_set.add(symbols[j])
+
+	subsetCorrMat = createSubsetMatrix(corrMat, vertex_set)
+	symbols = subsetCorrMat.columns
+	numStocks = len(symbols)
+	print "number of stocks:", numStocks
+
+	if lib == "nx":	
+		g = nx.Graph()
+		for i,sym in enumerate(symbols):
+			cluster = 0 #randint(1, 5)
+			companyName = company.get(sym)
+			if companyName == None or len(companyName) == 0:
+				companyName = "Unavailable"
+			g.add_node(i, symbol=sym, name = companyName, cluster=cluster)
+
+		for i in range(numStocks):
+			for j in range(i+1, numStocks):
+				w = subsetCorrMat[symbols[i]][symbols[j]]
+				if abs(w) >= threshold:
+					#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
+					g.add_edge(i, j, weight=float(w))
+
+		print g.number_of_nodes(), g.number_of_edges()
+		nx.write_graphml(g, outFilename)
+		
+		return g
+
+
+#draw graph using graphviz function in gt
+def drawGraphviz(g):
+	#g = price_network(1500)
+	deg = g.degree_property_map("out")
+	deg.a = 2 * (np.sqrt(deg.a) * 0.5 + 0.4)
+	ebet = betweenness(g)[1]
+	pos = sfdp_layout(g)
+
+	graphviz_draw(g, pos=pos, vcolor="blue", elen=10, ecolor="red", output="graphviz-draw.pdf")
+
+	#print deg.a
+	#print ebet
+
+	'''
+	graphviz_draw(g, 
+		#pos=None, 
+		#size=(15, 15), 
+		#pin=False, 
+		#layout=None, 
+		#maxiter=None, 
+		#ratio='fill', 
+		#overlap=True, 
+		#sep=None, 
+		#splines=False, 
+		#vsize=0.105, 
+		#penwidth=1.0, 
+		elen=10, 
+		#gprops={}, 
+		#vprops={}, 
+		#eprops={}, 
+		vcolor=deg, 
+		ecolor=ebet, 
+		#vcmap=None, 
+		#vnorm=True, 
+		#ecmap=None, 
+		#enorm=True, 
+		vorder=deg, 
+		eorder=ebet,  
+		#output_format='auto', 
+		#fork=False, 
+		#return_string=False,
+		output="graphviz-draw.pdf")
+	'''
+
+	print "printed graph"
