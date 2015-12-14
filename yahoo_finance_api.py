@@ -20,6 +20,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 from random import *
 
+# 'force' parameter
+# if True then load fresh data from web
+# otherwise load data previously stored in file
+
+DATA_FILE_LOC = "data/"
+PROCESSED_FILE_LOC = "processed/"
+#PREFIX = "nasdaq_index_"
+#PREFIX = "sp500_"
+PREFIX = "nasdaq_2014_2015_"
+CRITERIA = "return_"
+#SECTOR_INFO_FILE = PROCESSED_FILE_LOC + "nasdaq_index.csv"
+#SECTOR_INFO_FILE = PROCESSED_FILE_LOC + "sp500.csv"
+#SECTOR_INFO_FILE = "nasdaq_sector_industry_company.json"
+SECTOR_INFO_FILE = PROCESSED_FILE_LOC + "nasdaq.csv"
 
 config = SparkConf()
 #self.awsAccessKeyId="<awsAccessKeyId>"
@@ -56,22 +70,53 @@ def loadJsonDataAsSparkDF(filename):
 	df = sqlContext.read.json(filename)
 	return df
 
+
 def writePandasDataFrameAsJsonToFile(df, filename):
 	f = open(filename, "wb")
 	df.to_json(f, orient='records')
 	f.close()
 
+
 # Get list of companies for particular stock exchange
 # exchange: {'nasdaq', 'nyse', 'amex'}
-def getSymbols(exchange):
-	url = "http://www.nasdaq.com/screening/companies-by-name.aspx"
-	payload = {'letter': '0', 'exchange': str(exchange), 'render': 'download'}
-	response = requests.get(url, params=payload)
-	data = re.sub(r'\,(\r\n)', r'\1', response.content)
-	symbols = (pd.read_csv(StringIO(data), quotechar='"'))['Symbol']
-	symbols = symbols.sort_values()
-	symbols.index = range(len(symbols))
+def getStockExchangeSymbols(exchange="nasdaq", force=False):
+	filename = PROCESSED_FILE_LOC + exchange + ".csv"
+	print isfile(filename)
+
+	if force or not isfile(filename):
+		url = "http://www.nasdaq.com/screening/companies-by-name.aspx"
+		payload = {'letter': '0', 'exchange': str(exchange), 'render': 'download'}
+		response = requests.get(url, params=payload)
+		data = re.sub(r'\,(\r\n)', r'\1', response.content)
+		symbols = (pd.read_csv(StringIO(data), quotechar='"'))#['Symbol']
+		symbols.to_csv(filename, index=False)
+		#symbols = symbols.sort_values()
+		#symbols.index = range(len(symbols))
+	else:
+		symbols = pd.read_csv(filename)
+
 	return symbols
+
+# TODO - add code for other stock indexes
+def getStockExchangeIndexSymbols(exchange="nasdaq", force=False):
+	filename = PROCESSED_FILE_LOC + exchange + "_index.csv"
+
+	if force or not isfile(filename):
+		# add code for other stock indexes if required
+		page = requests.get('http://www.cnbc.com/nasdaq-100/')
+		tree = html.fromstring(page.content)
+		data = tree.xpath('//div[@class="future-row"]//tr/@data-table-chart-symbol')
+		symbols = []
+		for symbol in data:
+			symbols.append(symbol)
+		df = pd.DataFrame(symbols, columns=["Symbol"])
+		dfAll = getStockExchangeSymbols(exchange = exchange)
+		df = df.merge(nasdaqAll, on="Symbol")
+		df.to_csv(filename)
+	else:
+		df = pd.read_csv(filename)
+
+	return df
 
 # Search for stocks
 def searchStock(searchTerm):
@@ -235,11 +280,13 @@ def execQuery(query):
 
 # fetch data from 01-01-startYear to today's date for symbols
 # write data for each symbol in separate json file at fileLoc
-def fetchData(symbols, startYear, fileLoc):
+def fetchData(symbols, startYear, endYear, fileLoc):
+
 	dateFormat = '%Y-%m-%d'
-	#today = dt.date.today()
-	today = dt.date(2015, 11, 25)
-	endYear = today.year
+	today = dt.date.today()
+	#today = dt.date(2015, 11, 25)
+	if endYear == None:
+		endYear = today.year
 
 	if startYear <= endYear:
 		for symbol in symbols:
@@ -289,8 +336,8 @@ def fetchData(symbols, startYear, fileLoc):
 # exception: stackOverflow error
 def loadData(fileLoc):
 	#fileLoc = './data'
-	#fileList = listdir(fileLoc)
-	fileList = ['MSFT.json']
+	fileList = listdir(fileLoc)
+	#fileList = ['MSFT.json']
 	fileList.sort()
 
 	quotes = loadJsonDataAsSparkDF(join(fileLoc, 'dummy.json'))
@@ -316,13 +363,15 @@ def loadData(fileLoc):
 
 
 def gatherStats(fileLoc, sector=None):
-	df = pd.read_json("sector_industry_company_subset.json")
+	'''df = pd.read_json("sector_industry_company_subset.json")
 	if sector != None:
 		symbols = list(df[df['sector_name'] == sector]['company_symbol'])
 	else:
 		symbols = list(df['company_symbol'])
 
-	fileList = [(symbol + ".json") for symbol in symbols]
+	fileList = [(symbol + ".json") for symbol in symbols]'''
+	
+	fileList = listdir(fileLoc)
 	print "fileListLen:", len(fileList)
 
 	stats = pd.DataFrame()
@@ -346,7 +395,78 @@ def gatherStats(fileLoc, sector=None):
 
 			#break
 
+	return stats
+
+
+def gatherStats2(fileLoc, startYear, endYear, sector=None):
+	'''df = pd.read_json("sector_industry_company_subset.json")
+	if sector != None:
+		symbols = list(df[df['sector_name'] == sector]['company_symbol'])
+	else:
+		symbols = list(df['company_symbol'])
+
+	fileList = [(symbol + ".json") for symbol in symbols]'''
+	
+	fileList = listdir(fileLoc)
+	print "fileListLen:", len(fileList)
+
+	startDate = str(dt.date(startYear, 01, 01))
+	endDate = str(dt.date(endYear, 12, 31))
+
+	stats = pd.DataFrame()
+	for f in fileList: 
+		path = join(fileLoc, f)
+		if isfile(path) and getsize(path) > 0 and f!='dummy.json':
+			#print "loading data from file", f
+			quotes = loadJsonDataAsSparkDF(path)
+			quotes.registerTempTable('quotes')
+			#quotes.printSchema()
+
+			temp = sqlContext.sql("SELECT Symbol, COUNT(*), MIN(Date), MAX(Date) FROM quotes WHERE Date >= '" + startDate + "' AND Date <= '" + endDate + "' GROUP BY Symbol")
+			symbol = temp.first()[0]
+			count = temp.first()[1]
+			startDate = temp.first()[2]
+			endDate = temp.first()[3]
+
+			stats = stats.append({"Symbol": symbol, "Count": count, "Start_Date": startDate, "End_Date": endDate}, ignore_index=True)
+
+			#break
+
 	return stats			
+
+
+# gather stats for all data in fileLoc directory and store it in a file
+def gatherStats3(fileLoc, force=False):
+	dirName = fileLoc.split("/")[-2]
+	outFilename = PROCESSED_FILE_LOC + "stats_" + dirName + ".json"
+
+	if force or not isfile(outFilename):
+		startYear = int(dirName.split("_")[1])
+		endYear = int(dirName.split("_")[2])
+
+		fileList = listdir(fileLoc)
+		print "fileListLen:", len(fileList)
+
+		stats = pd.DataFrame(index = range(startYear, endYear+1))
+		for f in fileList: 
+			path = join(fileLoc, f)
+			if isfile(path) and getsize(path) > 0 and f!='dummy.json':
+				quotes = pd.read_json(path)
+				quotes['Year'] = quotes['Date'].apply(lambda x: x.year)
+				grp = quotes[['Year', 'Date']].groupby(['Year']).count()
+
+				symbol = f.split('.')[0]
+				s = pd.Series(0, index=stats.index)
+				for year in grp.index:
+					s[year] = grp.loc[year]['Date']
+
+				stats[symbol] = s
+
+		stats.to_json(outFilename)
+	else:
+		stats = pd.read_json(outFilename)
+
+	return stats
 
 
 # check number of records for each stock,
@@ -364,9 +484,9 @@ def findStockSubsetToAnalyse(fileLoc, sector=None):
 	print "numStocksWithMaxRecords:", stats.count()
 
 	if sector != None:
-		filename = "stock_subset_"+sector+".csv"
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset_"+sector+".csv"
 	else:
-		filename = "stock_subset.csv"
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset.csv"
 
 	print "writing stock symbols to file: ", filename
 	stats['Symbol'].to_csv(filename, index=False)
@@ -374,13 +494,62 @@ def findStockSubsetToAnalyse(fileLoc, sector=None):
 	return stats['Symbol']
 
 
-def loadStockSubsetToAnalyse(fileLoc, sector=None):
+def findStockSubsetToAnalyse2(fileLoc, startYear, endYear, sector=None):
+	stats = gatherStats2(fileLoc, startYear, endYear, sector)
+	#grp = stats.groupby('Count').count()
+	maxRecords = int(stats['Count'].value_counts().index[0])
+	print "maxRecords:", maxRecords
+	stats = stats[stats['Count'] == maxRecords]
+	stats.index = range(len(stats))
+	print "numStocksWithMaxRecords:", stats.count()
+
 	if sector != None:
-		filename = "stock_subset_"+sector+".csv"
-		outFilename = "closing_price_subset_"+sector+".json"
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset_"+sector+".csv"
 	else:
-		filename = "stock_subset.csv"
-		outFilename = "closing_price_subset.json"
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset.csv"
+
+	print "writing stock symbols to file: ", filename
+	stats['Symbol'].to_csv(filename, index=False)
+
+	return stats['Symbol']
+
+
+def findStockSubsetToAnalyse3(fileLoc, startYear, endYear, sector=None):
+	stats = gatherStats3(fileLoc)
+	stats = stats.loc[startYear:endYear]
+	stats = stats.sum(axis=0)
+
+	maxRecords = (stats.value_counts()).index[0]
+	print "maxRecords:", maxRecords
+
+	symbols = pd.Series()
+	i = 0
+	for symbol in stats.index:
+		if stats[symbol] == maxRecords:
+			symbols.set_value(i, symbol)
+			i += 1
+
+	print "number of stocks with max records:", len(symbols)
+
+	if sector != None:
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset_"+sector+".csv"
+	else:
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset.csv"
+
+	print "writing stock symbols to file:", filename
+	symbols.to_csv(filename, index=False)
+
+	return symbols
+
+
+# criteria can be "return" or "cp" (closing price)
+def loadStockSubsetToAnalyse(fileLoc, criteria="return", sector=None):
+	if sector != None:
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset_"+sector+".csv"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "closing_price_subset_"+sector+".json"
+	else:
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset.csv"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "closing_price_subset.json"
 
 	print "reading stock symbols from file:", filename
 	print "writing closing price data to file:", outFilename
@@ -392,23 +561,67 @@ def loadStockSubsetToAnalyse(fileLoc, sector=None):
 		#print symbol
 		path = join(fileLoc, symbol+'.json')
 		if isfile(path):
-			temp = pd.read_json(path)
+			temp = pd.read_json(path)['Close']
+			
+			if criteria == "return":
+				# calculating log return
+				temp = np.diff(np.log(temp))
+				np.insert(temp, 0, 0)
+			
 			#print temp.head()
-			quotes[symbol] = temp['Close'] 
+			quotes[symbol] = temp
 			#break
 
 	quotes.to_json(outFilename)
 	#print quotes.columns
 	return quotes
 
+
+def loadStockSubsetToAnalyse2(fileLoc, startYear, endYear, criteria="return", sector=None):
+	if sector != None:
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset_"+sector+".csv"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "closing_price_subset_"+sector+".json"
+	else:
+		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset.csv"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "closing_price_subset.json"
+
+	print "reading stock symbols from file:", filename
+	print "writing closing price data to file:", outFilename
+
+	symbols = pd.read_csv(filename, names=['Symbol'])['Symbol']
+	quotes = pd.DataFrame()
+
+	for symbol in symbols:
+		#print symbol
+		path = join(fileLoc, symbol+'.json')
+		if isfile(path):
+			temp = pd.read_json(path)[['Date', 'Close']]
+			temp['Year'] = temp['Date'].apply(lambda x: x.year)
+			temp = temp[(temp['Year'] >= startYear) & (temp['Year'] <= endYear)]['Close']
+			#print temp.groupby("Year").count()
+			
+			if criteria == "return":
+				# calculating log return
+				temp = np.diff(np.log(temp))
+				np.insert(temp, 0, 0)
+			
+			#print temp.head()
+			quotes[symbol] = temp
+			#break
+
+	quotes.to_json(outFilename)
+	#print quotes.columns
+	return quotes
+
+
 # not tested
 def calculateCorrelationMatrix(sector=None):
 	if sector != None:
-		filename = "closing_price_subset_"+sector+".json"
-		outFilename = "corr_matrix_"+sector+".json"
+		filename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "closing_price_subset_"+sector+".json"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "corr_matrix_"+sector+".json"
 	else:
-		filename = "closing_price_subset.json"
-		outFilename = "corr_matrix.json"
+		filename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "closing_price_subset.json"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "corr_matrix.json"
 
 	print "reading closing price data from file: ", filename
 
@@ -426,22 +639,26 @@ sector = one of ["Technology", ....]
 lib = "nx" or "gt" 
 '''
 def createGraph(threshold=0.5, sector=None, lib="nx"):
-	sectors = pd.read_json("nasdaq_sector_industry_company.json")
+	#sectors = pd.read_json("sector_industry_company.json")
+	sectors = pd.read_csv(SECTOR_INFO_FILE)
 
 	th = re.sub(r'([0-9]*)\.([0-9]*)',r'\1\2',str(threshold))
 	if sector != None:
-		filename = "corr_matrix_"+sector+".json"
-		outFilename = "stock_graph_"+lib+"_"+sector+"_th"+th+".xml"
-		industry = sectors[sectors['sector_name'] == sector]
+		filename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "corr_matrix_"+sector+".json"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_graph_"+lib+"_"+sector+"_th"+th+".xml"
+		#industry = sectors[sectors['sector_name'] == sector]
+		industry = sectors[sectors['Sector'] == sector]
 	else:
-		filename = "corr_matrix.json"
-		outFilename = "stock_graph_"+lib+"_th"+th+".xml"
+		filename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "corr_matrix.json"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_graph_"+lib+"_th"+th+".xml"
 		industry = sectors
 
 	print "reading correlation matrix from file: ", filename
 	print "writing graph to file: ", outFilename
 
-	company = dict(zip(industry['company_symbol'], industry['company_name']))
+	#company = dict(zip(industry['company_symbol'], zip(industry['company_name'], industry['sector_name'])))
+	company = dict(zip(industry['Symbol'], zip(industry['Name'], industry['Sector'])))
+	#print company
 
 	corrMat = pd.read_json(filename)
 	#print corrMat.head()
@@ -452,10 +669,15 @@ def createGraph(threshold=0.5, sector=None, lib="nx"):
 		g = nx.Graph()
 		for i,sym in enumerate(symbols):
 			cluster = 0 #randint(1, 5)
-			companyName = company.get(sym)
+			if sym in company:
+				companyName, sectorName = company.get(sym)
+			else:
+				companyName, sectorName = None, None
 			if companyName == None or len(companyName) == 0:
 				companyName = "Unavailable"
-			g.add_node(i, symbol=sym, name = companyName, cluster=cluster)
+			if sectorName == None or len(sectorName) == 0:
+				sectorName = "Unavailable"
+			g.add_node(i, symbol=sym, name = companyName, sector = sectorName, cluster=cluster)
 
 		for i in range(numStocks):
 			for j in range(i+1, numStocks):
@@ -466,8 +688,6 @@ def createGraph(threshold=0.5, sector=None, lib="nx"):
 
 		print g.number_of_nodes(), g.number_of_edges()
 		nx.write_graphml(g, outFilename)
-		
-		return g
 
 	elif lib == "gt":
 		g = Graph(directed=False)
@@ -499,8 +719,84 @@ def createGraph(threshold=0.5, sector=None, lib="nx"):
 		print g.num_vertices(), g.num_edges()
 		g.save(outFilename, fmt="graphml")
 
-		return g
+	drawGraph(outFilename)
 
+	getGraphStats(threshold, sector, lib)
+
+	return g
+
+
+def getGraphStats(threshold=0.5, sector=None, lib="nx"):
+	th = re.sub(r'([0-9]*)\.([0-9]*)',r'\1\2',str(threshold))
+	if sector != None:
+		filename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_graph_"+lib+"_"+sector+"_th"+th+".xml"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_graph_stats_"+lib+"_"+sector+"_th"+th
+	else:
+		filename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_graph_"+lib+"_th"+th+".xml"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_graph_stats_"+lib+"_th"+th
+
+	stats = dict()
+	if lib == "nx":
+		stats = dict()
+		g = nx.read_graphml(filename)
+		stats['num_nodes'] = g.number_of_nodes()
+		stats['num_edges'] = g.number_of_edges()
+		#stats['diameter'] = nx.diameter(g)
+		stats['clustering_coeff'] = nx.average_clustering(g)
+		stats['avg_degree'] = np.average(nx.degree(g).values())
+		stats['degree_hist'] = nx.degree_histogram(g)
+
+		y = stats['degree_hist']
+		x = range(len(y))
+		
+	
+	f = open(outFilename + ".txt", "wb")
+	f.write(str(stats))
+	f.close()
+
+	plt.plot(x, y)
+	plt.savefig(outFilename + ".png")
+	plt.show()
+
+	return stats
+
+
+def multiplePlotsOnOneGraph(filenamePrefix, threshold, outFilename):
+	import ast
+
+	def trimZeros(a):
+		while a and a[-1] == 0:
+			a.pop()
+
+	y = []
+	label = []
+	minLen = 10000
+	color = ['r', 'g', 'b']
+	i = 0
+
+	for th in threshold:
+		filename = filenamePrefix + th + ".txt"
+		print filename
+		with open(filename, 'r') as f:
+			s = f.read()
+			stats = ast.literal_eval(s)
+			dh = stats['degree_hist']
+			y.append(dh)
+			label.append(th)
+			l = len(dh)
+			if l < minLen:
+				minLen = l
+
+	            
+	x = range(minLen)
+	fig, ax = plt.subplots()
+	ax.plot(x, y[0][:minLen], 'k--', label=label[0])
+	ax.plot(x, y[1][:minLen], 'k:', label=label[1])
+	ax.plot(x, y[2][:minLen], 'k', label=label[2])
+	legend = ax.legend(loc='upper center', shadow=True)
+
+	plt.savefig(outFilename)
+	plt.show()
 
 '''
 graph created with nx lib can be drawn using both nx and gt lib
@@ -617,13 +913,13 @@ def plotHistFromDict(x):
 def findCommunites(threshold=0.5, sector=None, k=5):
 	th = re.sub(r'([0-9]*)\.([0-9]*)',r'\1\2',str(threshold))
 	if sector != None:
-		graphInFilename = "stock_graph_nx_"+sector+"_th"+th+".xml"
-		graphOutFilename = "stock_communities_nx_"+sector+"_th"+th+"_k"+str(k)+".xml"
-		outFilename = "stock_communities_nx_"+sector+"_th"+th+"_k"+str(k)+".csv"
+		graphInFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_graph_nx_"+sector+"_th"+th+".xml"
+		graphOutFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_communities_nx_"+sector+"_th"+th+"_k"+str(k)+".xml"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_communities_nx_"+sector+"_th"+th+"_k"+str(k)+".csv"
 	else:
-		graphInFilename = "stock_graph_nx_"+th+".xml"
-		graphOutFilename = "stock_communities_nx"+"_th"+th+"_k"+str(k)+".xml"
-		outFilename = "stock_communities_nx"+"_th"+th+"_k"+str(k)+".csv"
+		graphInFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_graph_nx_th"+th+".xml"
+		graphOutFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_communities_nx"+"_th"+th+"_k"+str(k)+".xml"
+		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_communities_nx"+"_th"+th+"_k"+str(k)+".csv"
 
 	print "reading graph from file: ", graphInFilename
 	print "writing graph with community info to file: ", outFilename
@@ -637,9 +933,11 @@ def findCommunites(threshold=0.5, sector=None, k=5):
 	communities = []
 	for c in comm:
 		communities.append(c) 
-	print "number of communities found: ", len(communities)
 	
-	colors = range(len(communities))
+	numCommunities = len(communities)
+	print "number of communities found: ", numCommunities
+	
+	colors = range(numCommunities)
 
 	i = 0
 	for c in communities:
@@ -652,11 +950,60 @@ def findCommunites(threshold=0.5, sector=None, k=5):
 	import csv
 	with open(outFilename, "wb") as f:
 		writer = csv.writer(f, delimiter='|', quotechar="'", quoting=csv.QUOTE_MINIMAL)
-		writer.writerow(["symbol", "name", "cluster"])
+		writer.writerow(["sector", "symbol", "name", "cluster"])
 		for v in g:
-			writer.writerow([g.node[v]['symbol'], g.node[v]['name'], g.node[v]['cluster']])
+			writer.writerow([g.node[v]['sector'], g.node[v]['symbol'], g.node[v]['name'], g.node[v]['cluster']])
+
+	results = PROCESSED_FILE_LOC + "results.csv"
+	with open(results, "a") as f1:
+		f1.write(str(dt.datetime.today()) + "," + outFilename + "," + str(numCommunities) + "," + str(calculateModularity(graphOutFilename)) + "\n")
 
 	drawGraph(graphOutFilename, "gt")
+
+
+def calculateModularity(graphFilename):
+	G = load_graph(graphFilename)
+	return modularity(G, G.vp.cluster, weight=G.ep.weight)
+
+
+def plotSectorHist():
+	filename1 = "processed/nasdaq_2012_2013_return_stock_communities_nx_th08_k4.csv"
+	filename2 = "processed/nasdaq_2014_2015_return_stock_communities_nx_th08_k4.csv"
+	
+	df1 = pd.read_csv(filename1, sep="|")
+	df2 = pd.read_csv(filename2, sep="|")
+	
+	z1 = df1['sector'].value_counts()
+	z1 = z1.sort_index()
+	x = z1.index
+	y1 = z1.values
+	z2 = df2['sector'].value_counts()
+	z2 = z2.sort_index()
+	y2 = z2.values
+
+	df = pd.DataFrame(columns=['sector', '2012-2013', '2014-2015'])
+	df['sector'] = x
+	df['2012-2013'] = y1
+	df['2014-2015'] = y2
+	df.to_csv("processed/sectors_hist.csv", index=False)
+
+	ind = np.arange(len(x))
+	width = 0.25       # the width of the bars
+
+	fig, ax = plt.subplots()
+	rects1 = ax.bar(ind, y1, width, color='r')
+	rects2 = ax.bar(ind + width, y2, width, color='y')
+
+	# add some text for labels, title and axes ticks
+	ax.set_ylabel('Number of Companies')
+	ax.set_title('Number of Companies by Sector')
+	ax.set_xticks(ind + width)
+	ax.set_xticklabels(x)
+
+	ax.legend((rects1[0], rects2[0]), ('2012-2013', '2014-2015'))
+
+	#plt.savefig("processed/sector_hist.png")
+	plt.show()
 
 
 def createSubsetMatrix(matDF, columns):
