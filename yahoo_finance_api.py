@@ -235,12 +235,14 @@ def getSectorDataOld():
 	#print(query)
 	return execQuery(query)
 
+
 # Get list of companies belonging to these industryIds
 def getIndustryData(industryIds):
 	industryIds = ",".join(["'" + str(id) + "'" for id in industryIds])
 	query = "select * from yahoo.finance.industry where id in (" + industryIds + ")"
 	#print(query)
 	return execQuery(query)
+
 
 # Get historical divident data for a symbol
 def getDividendHistory(symbol, startDate, endDate):
@@ -249,12 +251,14 @@ def getDividendHistory(symbol, startDate, endDate):
 	#print(query)
 	return execQuery(query)
 
+
 # Get historical data for a symbol
 def getHistoricalData(symbol, startDate, endDate):
 	query = "select * from yahoo.finance.historicaldata where startDate='" + startDate + "' \
 			and endDate='" + endDate + "' and symbol='" + symbol + "'";
 	#print(query)
 	return execQuery(query)
+
 
 # Get quotes (details) for one or multiple symbols
 def getQuotes(symbols):
@@ -263,12 +267,14 @@ def getQuotes(symbols):
 	#print(query)
 	return execQuery(query)
 
+
 # Get quotes (summary) for one or multiple symbols
 def getQuotesList(symbols):
 	symbols = ",".join(["'" + s + "'" for s in symbols])
 	query = "select * from yahoo.finance.quoteslist where symbol in (" + symbols + ")"
 	#print(query)
 	return execQuery(query)
+
 
 # Execute yql query
 def execQuery(query):
@@ -277,6 +283,7 @@ def execQuery(query):
 	response = requests.get(url, params=payload)
 	#print(response)
 	return response
+
 
 # fetch data from 01-01-startYear to today's date for symbols
 # write data for each symbol in separate json file at fileLoc
@@ -331,6 +338,7 @@ def fetchData(symbols, startYear, endYear, fileLoc):
 
 			else:
 				print 'quotes for', symbol, 'already exists'
+
 
 # load all stock quotes from files in fileLoc in a spark dataframe
 # exception: stackOverflow error
@@ -577,7 +585,7 @@ def loadStockSubsetToAnalyse(fileLoc, criteria="return", sector=None):
 	return quotes
 
 
-def loadStockSubsetToAnalyse2(fileLoc, startYear, endYear, criteria="return", sector=None):
+def loadStockSubsetToAnalyse2(fileLoc, startYear, endYear, force=False, criteria="return", sector=None):
 	if sector != None:
 		filename = PROCESSED_FILE_LOC + PREFIX + "stock_subset_"+sector+".csv"
 		outFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "closing_price_subset_"+sector+".json"
@@ -588,28 +596,32 @@ def loadStockSubsetToAnalyse2(fileLoc, startYear, endYear, criteria="return", se
 	print "reading stock symbols from file:", filename
 	print "writing closing price data to file:", outFilename
 
-	symbols = pd.read_csv(filename, names=['Symbol'])['Symbol']
-	quotes = pd.DataFrame()
+	if force or not isfile(outFilename):
+		symbols = pd.read_csv(filename, names=['Symbol'])['Symbol']
+		quotes = pd.DataFrame()
 
-	for symbol in symbols:
-		#print symbol
-		path = join(fileLoc, symbol+'.json')
-		if isfile(path):
-			temp = pd.read_json(path)[['Date', 'Close']]
-			temp['Year'] = temp['Date'].apply(lambda x: x.year)
-			temp = temp[(temp['Year'] >= startYear) & (temp['Year'] <= endYear)]['Close']
-			#print temp.groupby("Year").count()
-			
-			if criteria == "return":
-				# calculating log return
-				temp = np.diff(np.log(temp))
-				np.insert(temp, 0, 0)
-			
-			#print temp.head()
-			quotes[symbol] = temp
-			#break
+		for symbol in symbols:
+			#print symbol
+			path = join(fileLoc, symbol+'.json')
+			if isfile(path):
+				temp = pd.read_json(path)[['Date', 'Close']]
+				temp['Year'] = temp['Date'].apply(lambda x: x.year)
+				temp = temp[(temp['Year'] >= startYear) & (temp['Year'] <= endYear)]['Close']
+				#print temp.groupby("Year").count()
+				
+				if criteria == "return":
+					# calculating log return
+					temp = np.diff(np.log(temp))
+					np.insert(temp, 0, 0)
+				
+				#print temp.head()
+				quotes[symbol] = temp
+				#break
 
-	quotes.to_json(outFilename)
+		quotes.to_json(outFilename)
+	else:
+		quotes = pd.read_json(outFilename)
+	
 	#print quotes.columns
 	return quotes
 
@@ -638,7 +650,7 @@ threshold = values between 0.0 and 1.0
 sector = one of ["Technology", ....]
 lib = "nx" or "gt" 
 '''
-def createGraph(threshold=0.5, sector=None, lib="nx"):
+def createGraph(threshold=0.5, sector=None, lib="nx", force=False):
 	#sectors = pd.read_json("sector_industry_company.json")
 	sectors = pd.read_csv(SECTOR_INFO_FILE)
 
@@ -656,70 +668,73 @@ def createGraph(threshold=0.5, sector=None, lib="nx"):
 	print "reading correlation matrix from file: ", filename
 	print "writing graph to file: ", outFilename
 
-	#company = dict(zip(industry['company_symbol'], zip(industry['company_name'], industry['sector_name'])))
-	company = dict(zip(industry['Symbol'], zip(industry['Name'], industry['Sector'])))
-	#print company
+	if force or not isfile(outFilename):
+		#company = dict(zip(industry['company_symbol'], zip(industry['company_name'], industry['sector_name'])))
+		company = dict(zip(industry['Symbol'], zip(industry['Name'], industry['Sector'])))
+		#print company
 
-	corrMat = pd.read_json(filename)
-	#print corrMat.head()
-	symbols = corrMat.columns
-	numStocks = len(symbols)
+		corrMat = pd.read_json(filename)
+		#print corrMat.head()
+		symbols = corrMat.columns
+		numStocks = len(symbols)
 
-	if lib == "nx":	
-		g = nx.Graph()
-		for i,sym in enumerate(symbols):
-			cluster = 0 #randint(1, 5)
-			if sym in company:
-				companyName, sectorName = company.get(sym)
-			else:
-				companyName, sectorName = None, None
-			if companyName == None or len(companyName) == 0:
-				companyName = "Unavailable"
-			if sectorName == None or len(sectorName) == 0:
-				sectorName = "Unavailable"
-			g.add_node(i, symbol=sym, name = companyName, sector = sectorName, cluster=cluster)
+		if lib == "nx":	
+			g = nx.Graph()
+			for i,sym in enumerate(symbols):
+				cluster = 0 #randint(1, 5)
+				if sym in company:
+					companyName, sectorName = company.get(sym)
+				else:
+					companyName, sectorName = None, None
+				if companyName == None or len(companyName) == 0:
+					companyName = "Unavailable"
+				if sectorName == None or len(sectorName) == 0:
+					sectorName = "Unavailable"
+				g.add_node(i, symbol=sym, name = companyName, sector = sectorName, cluster=cluster)
 
-		for i in range(numStocks):
-			for j in range(i+1, numStocks):
-				w = corrMat[symbols[i]][symbols[j]]
-				if abs(w) >= threshold:
-					#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
-					g.add_edge(i, j, weight=float(w))
+			for i in range(numStocks):
+				for j in range(i+1, numStocks):
+					w = corrMat[symbols[i]][symbols[j]]
+					if abs(w) >= threshold:
+						#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
+						g.add_edge(i, j, weight=float(w))
 
-		print g.number_of_nodes(), g.number_of_edges()
-		nx.write_graphml(g, outFilename)
+			print g.number_of_nodes(), g.number_of_edges()
+			nx.write_graphml(g, outFilename)
 
-	elif lib == "gt":
-		g = Graph(directed=False)
-		g.add_vertex(numStocks)
+		elif lib == "gt":
+			g = Graph(directed=False)
+			g.add_vertex(numStocks)
 
-		v_symbol = g.new_vertex_property("string")
-		g.vp.symbol = v_symbol
-		v_name = g.new_vertex_property("string")
-		g.vp.name = v_name
-		v_cluster = g.new_vertex_property("int")
-		g.vp.cluster = v_cluster
-		for i in range(numStocks):
-			v = g.vertex(i)
-			g.vp.symbol[v] = symbols[i]
-			g.vp.name[v] = company.get(symbols[i])
-			g.vp.cluster[v] = 0
+			v_symbol = g.new_vertex_property("string")
+			g.vp.symbol = v_symbol
+			v_name = g.new_vertex_property("string")
+			g.vp.name = v_name
+			v_cluster = g.new_vertex_property("int")
+			g.vp.cluster = v_cluster
+			for i in range(numStocks):
+				v = g.vertex(i)
+				g.vp.symbol[v] = symbols[i]
+				g.vp.name[v] = company.get(symbols[i])
+				g.vp.cluster[v] = 0
 
-		e_weight = g.new_edge_property("double")
-		g.ep.weight = e_weight
+			e_weight = g.new_edge_property("double")
+			g.ep.weight = e_weight
 
-		for i in range(numStocks-1):
-			for j in range(i+1, numStocks):
-				w = corrMat[symbols[i]][symbols[j]]
-				if abs(w) >= threshold:
-					#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
-					g.add_edge(i, j)
-					g.ep.weight[g.edge(i, j)] = w
+			for i in range(numStocks-1):
+				for j in range(i+1, numStocks):
+					w = corrMat[symbols[i]][symbols[j]]
+					if abs(w) >= threshold:
+						#print "adding edge: (", symbols[i], ",", symbols[j], ",", w, ")" 
+						g.add_edge(i, j)
+						g.ep.weight[g.edge(i, j)] = w
 
-		print g.num_vertices(), g.num_edges()
-		g.save(outFilename, fmt="graphml")
+			print g.num_vertices(), g.num_edges()
+			g.save(outFilename, fmt="graphml")
 
-	drawGraph(outFilename)
+		drawGraph(outFilename)
+	else:
+		g = nx.read_graphml(outFilename)
 
 	getGraphStats(threshold, sector, lib)
 
@@ -910,7 +925,7 @@ def plotHistFromDict(x):
 
 
 # find communites using clique percolation method (networkx)
-def findCommunites(threshold=0.5, sector=None, k=5):
+def findCommunites(threshold=0.5, sector=None, k=5, force=False):
 	th = re.sub(r'([0-9]*)\.([0-9]*)',r'\1\2',str(threshold))
 	if sector != None:
 		graphInFilename = PROCESSED_FILE_LOC + PREFIX + CRITERIA + "stock_graph_nx_"+sector+"_th"+th+".xml"
@@ -925,40 +940,41 @@ def findCommunites(threshold=0.5, sector=None, k=5):
 	print "writing graph with community info to file: ", outFilename
 	print "writing community details in csv format to file: ", outFilename
 
-	g = nx.read_graphml(graphInFilename)
-	#freq = findFreqOfCliquesInGraph(g)
-	#plotHistFromDict(freq)
-	
-	comm = nx.k_clique_communities(g, k)
-	communities = []
-	for c in comm:
-		communities.append(c) 
-	
-	numCommunities = len(communities)
-	print "number of communities found: ", numCommunities
-	
-	colors = range(numCommunities)
-
-	i = 0
-	for c in communities:
-		for v in c:
-			g.node[v]['cluster'] = colors[i] + 1
-		i += 1
-
-	nx.write_graphml(g, graphOutFilename)
+	if force or not isfile(graphOutFilename):
+		g = nx.read_graphml(graphInFilename)
+		#freq = findFreqOfCliquesInGraph(g)
+		#plotHistFromDict(freq)
 		
-	import csv
-	with open(outFilename, "wb") as f:
-		writer = csv.writer(f, delimiter='|', quotechar="'", quoting=csv.QUOTE_MINIMAL)
-		writer.writerow(["sector", "symbol", "name", "cluster"])
-		for v in g:
-			writer.writerow([g.node[v]['sector'], g.node[v]['symbol'], g.node[v]['name'], g.node[v]['cluster']])
+		comm = nx.k_clique_communities(g, k)
+		communities = []
+		for c in comm:
+			communities.append(c) 
+		
+		numCommunities = len(communities)
+		print "number of communities found: ", numCommunities
+		
+		colors = range(numCommunities)
 
-	results = PROCESSED_FILE_LOC + "results.csv"
-	with open(results, "a") as f1:
-		f1.write(str(dt.datetime.today()) + "," + outFilename + "," + str(numCommunities) + "," + str(calculateModularity(graphOutFilename)) + "\n")
+		i = 0
+		for c in communities:
+			for v in c:
+				g.node[v]['cluster'] = colors[i] + 1
+			i += 1
 
-	drawGraph(graphOutFilename, "gt")
+		nx.write_graphml(g, graphOutFilename)
+			
+		import csv
+		with open(outFilename, "wb") as f:
+			writer = csv.writer(f, delimiter='|', quotechar="'", quoting=csv.QUOTE_MINIMAL)
+			writer.writerow(["sector", "symbol", "name", "cluster"])
+			for v in g:
+				writer.writerow([g.node[v]['sector'], g.node[v]['symbol'], g.node[v]['name'], g.node[v]['cluster']])
+
+		results = PROCESSED_FILE_LOC + "results.csv"
+		with open(results, "a") as f1:
+			f1.write(str(dt.datetime.today()) + "," + outFilename + "," + str(numCommunities) + "," + str(calculateModularity(graphOutFilename)) + "\n")
+
+		drawGraph(graphOutFilename, "gt")
 
 
 def calculateModularity(graphFilename):
@@ -1078,39 +1094,5 @@ def drawGraphviz(g):
 	pos = sfdp_layout(g)
 
 	graphviz_draw(g, pos=pos, vcolor="blue", elen=10, ecolor="red", output="graphviz-draw.pdf")
-
-	#print deg.a
-	#print ebet
-
-	'''
-	graphviz_draw(g, 
-		#pos=None, 
-		#size=(15, 15), 
-		#pin=False, 
-		#layout=None, 
-		#maxiter=None, 
-		#ratio='fill', 
-		#overlap=True, 
-		#sep=None, 
-		#splines=False, 
-		#vsize=0.105, 
-		#penwidth=1.0, 
-		elen=10, 
-		#gprops={}, 
-		#vprops={}, 
-		#eprops={}, 
-		vcolor=deg, 
-		ecolor=ebet, 
-		#vcmap=None, 
-		#vnorm=True, 
-		#ecmap=None, 
-		#enorm=True, 
-		vorder=deg, 
-		eorder=ebet,  
-		#output_format='auto', 
-		#fork=False, 
-		#return_string=False,
-		output="graphviz-draw.pdf")
-	'''
 
 	print "printed graph"
